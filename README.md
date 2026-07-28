@@ -4,8 +4,6 @@ Sony Dash HID-C10, a.k.a. a Chumby with a Sigma Designs set-top-box chip inside.
 
 Nothing here required opening the case or touching a chip with a probe. Every result came from software running on the device itself, over the network, through the official recovery-flash mechanism.
 
-**Full write-up:** [`docs/writeup.html`](docs/writeup.html) (open it locally in a browser) · plain-text / forum version: [`docs/forum-post.txt`](docs/forum-post.txt)
-
 ## Status
 
 | Piece | Status | Notes |
@@ -32,7 +30,6 @@ Video only for now — see [The audio investigation](#the-audio-investigation) f
 ## Repo layout
 
 ```
-docs/            The full write-up (HTML + a plain-text forum/BBCode version)
 src/doom/        DOOM (doomgeneric) backend + display/audio test tools, C source
 scripts/device/  Scripts that run ON the Dash (launch/control DOOM, boot hooks)
 scripts/bridge/  PC-side dev server used while iterating (serves files, logs status)
@@ -126,7 +123,7 @@ Two concrete, well-bounded problems remain:
 - **Audio output routing without a sound core.** Need either the missing kernel sound-core symbols made available in the recovery environment, or the specific sequence of RM engine properties the ALSA driver sets before its first (blocking) output-routing write, so it can be replicated from userspace in order.
 - **Why a value-only rootfs modification loops the normal boot.** Static analysis says it should be harmless; live testing (twice, two different methods) says otherwise.
 
-Issues and PRs welcome — see `docs/writeup.html` for the full technical detail behind both of these.
+Issues and PRs welcome.
 
 ## License
 

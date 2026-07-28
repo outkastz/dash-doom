@@ -1,0 +1,35 @@
+#!/bin/sh
+# STANDALONE DOOM launcher for the Dash "Special Options" recovery USB flow.
+# No PC / network / bridge required - everything needed ships on this USB stick.
+# Launched by unbrick.swf (per flashplayer.cfg's PreloadWidget) after unbrick_sync.
+exec >/tmp/dashctl.log 2>&1
+
+[ -c /dev/ts0 ] || mknod /dev/ts0 c 13 64
+
+# USB/FAT is often mounted noexec - stage the binary + WAD into tmpfs (RAM) first.
+cp -f /mnt/usb/doom_dash_dcc /tmp/doom_dash_dcc
+chmod +x /tmp/doom_dash_dcc
+cp -f /mnt/usb/doom1.wad /tmp/doom1.wad
+
+export LD_LIBRARY_PATH=/usr/local/mrua/lib:/lib:/usr/lib
+export HOME=/tmp
+
+# Take over the display: stop anything else that might draw over the panel.
+# doom_dash_dcc's DCCInitMicroCodeEx(InitDisplay) takes ownership of the whole
+# display chain once it starts, but the recovery menu's flashplayer needs to be
+# knocked down first or it keeps repainting on top of us.
+i=0
+while [ $i -lt 8 ]; do
+  killall chumbyflashplayer.x 2>/dev/null
+  killall chumbyflashplayer 2>/dev/null
+  i=$((i + 1))
+done
+
+cd /tmp
+while :; do
+  if ! pidof doom_dash_dcc >/dev/null 2>&1; then
+    # -gfxmode rgb565 is REQUIRED (default is 32bpp; the OSD backend expects 16bpp).
+    ./doom_dash_dcc -iwad doom1.wad -gfxmode rgb565 >>/tmp/doom.log 2>&1
+  fi
+  sleep 3
+done

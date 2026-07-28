@@ -1,0 +1,5 @@
+#!/bin/sh
+
+touch /mnt/usb/unbrick_sync_success
+sync
+echo 1

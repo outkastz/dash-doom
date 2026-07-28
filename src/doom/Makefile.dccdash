@@ -1,0 +1,68 @@
+################################################################
+# doomgeneric for the Sony Dash HID-C10 (Sigma SMP8654, mipsel)
+# RM/DCC OSD backend -- the WORKING display path (session 7).
+#
+# Unlike the musl/static fb build, this MUST use the glibc toolchain and link
+# the Dash's OWN DCC libraries (SMP8654 ABI). Bootlin glibc-2.31 crt is pre-2.34
+# so the result needs only GLIBC_2.0 -> runs on the Dash's glibc 2.8.
+# Run on-device with LD_LIBRARY_PATH=/usr/local/mrua/lib:/lib:/usr/lib and
+# -gfxmode rgb565 (so i_video fills DG_ScreenBuffer as native RGB565).
+################################################################
+
+ifeq ($(V),1)
+	VB=''
+else
+	VB=@
+endif
+
+CROSS  = /root/mips32el--glibc--stable-2020.02-2/bin/mipsel-linux-
+CC     = $(CROSS)gcc
+
+SDK     = /root/smp86xxsdk
+DASHSYS = /root/dashsys
+
+ARCH   = -march=mips32r2 -mabi=32
+CFLAGS  += -Os -g -Wall $(ARCH) -no-pie -fno-pie
+CFLAGS  += -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE
+CFLAGS  += -I$(SDK)/include
+# render at DOOM-native 320x200; the dccdash backend upscales to the full 800x480 panel
+CFLAGS  += -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200
+
+LDFLAGS += -no-pie $(ARCH) -rdynamic
+LDFLAGS += -L$(DASHSYS)/lib -Wl,-rpath-link,$(DASHSYS)/lib
+LIBS    += -lrua -ldcc -lrmcore -lrmcw -lllad -ldbug -lpthread -lm
+
+OBJDIR = build_dccdash
+OUTPUT = doom_dash_dcc
+
+# the one symbol librmcore needs that oslayer.c lacks (RMCalloc) comes from osextra.o
+EXTRA_SRC = oslayer.o osextra.o
+
+SRC_DOOM = dummy.o am_map.o doomdef.o doomstat.o dstrings.o d_event.o d_items.o d_iwad.o d_loop.o d_main.o d_mode.o d_net.o f_finale.o f_wipe.o g_game.o hu_lib.o hu_stuff.o info.o i_cdmus.o i_endoom.o i_joystick.o i_scale.o i_sound.o i_system.o i_timer.o memio.o m_argv.o m_bbox.o m_cheat.o m_config.o m_controls.o m_fixed.o m_menu.o m_misc.o m_random.o p_ceilng.o p_doors.o p_enemy.o p_floor.o p_inter.o p_lights.o p_map.o p_maputl.o p_mobj.o p_plats.o p_pspr.o p_saveg.o p_setup.o p_sight.o p_spec.o p_switch.o p_telept.o p_tick.o p_user.o r_bsp.o r_data.o r_draw.o r_main.o r_plane.o r_segs.o r_sky.o r_things.o sha1.o sounds.o statdump.o st_lib.o st_stuff.o s_sound.o tables.o v_video.o wi_stuff.o w_checksum.o w_file.o w_main.o w_wad.o z_zone.o w_file_stdc.o i_input.o i_video.o doomgeneric.o doomgeneric_dccdash.o mus2mid.o
+OBJS += $(addprefix $(OBJDIR)/, $(SRC_DOOM) $(EXTRA_SRC))
+
+all: $(OUTPUT)
+
+clean:
+	rm -rf $(OBJDIR)
+	rm -f $(OUTPUT)
+
+$(OBJDIR)/oslayer.o: $(SDK)/liboslayer/oslayer.c
+	@mkdir -p $(OBJDIR)
+	@echo [Compiling oslayer.c]
+	$(VB)$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/osextra.o: /root/osextra.c
+	@mkdir -p $(OBJDIR)
+	@echo [Compiling osextra.c]
+	$(VB)$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(OBJDIR)
+	@echo [Compiling $<]
+	$(VB)$(CC) $(CFLAGS) -c $< -o $@
+
+$(OUTPUT): $(OBJS)
+	@echo [Linking $@]
+	$(VB)$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $(OUTPUT) $(LIBS)
+	$(VB)$(CROSS)size $(OUTPUT)

@@ -1,6 +1,8 @@
 [h]Getting DOOM to run on a Sony Dash[/h]
 
-Sony Dash HID-C10, a.k.a. a Chumby with a Sigma Designs set-top-box chip inside. This is the log of putting id Software's [i]DOOM[/i] on it, plus everything that stood in the way, written up as a blueprint for whoever's next.
+Sony Dash HID-C10, a.k.a. a Chumby with a Sigma Designs set-top-box chip inside. Got id Software's [i]DOOM[/i] running natively on it - full source, write-up, and a ready-to-copy USB kit are all up on GitHub now:
+
+[url]https://github.com/outkastz/dash-doom[/url]
 
 [b]Status:[/b]
 [list]
@@ -9,169 +11,27 @@ Sony Dash HID-C10, a.k.a. a Chumby with a Sigma Designs set-top-box chip inside.
 [*][color=orange]Signed normal boot: OPEN PROBLEM[/color][/*]
 [/list]
 
-Device: Sony Dash HID-C10
-SoC: Sigma Designs SMP8654 ("tango3")
-CPU: MIPS32LE, kernel 2.6.22.19
+Device: Sony Dash HID-C10 - SoC: Sigma Designs SMP8654 ("tango3") - CPU: MIPS32LE, kernel 2.6.22.19
 
-Nothing here required opening the case or touching a chip with a probe. Every result below came from software running on the device itself, over the network, through the official recovery-flash mechanism.
+Nothing here required opening the case or touching a chip with a probe. Every result came from software running on the device itself, over the network, through the official recovery-flash mechanism.
 
-------------------------------------------------------------
-
-[h]1. The platform[/h]
-
-The Dash ships two personalities on the same board: a locked-down Chumby/Sony "smart display" app platform, and underneath it, a bog-standard Sigma Designs SMP8654 set-top-box chip - the same silicon family that ran cable boxes and IPTV decoders in the mid-2000s.
-
-It boots one of two root filesystems depending on a kernel command-line flag ([code]rfsp=[/code]), read out of U-Boot environment variables that are editable at runtime via [code]setxenv[/code]:
-
-[code]rfsp=9  ->  rfs1 (sigmblk9, 64MB)  ->  reached by ordinary power-on
-            The real Sony/Chumby control panel. Sound HW fully initialized.
-
-rfsp=8  ->  rfs2 (sigmblk8, 30MB)  ->  reached by button-combo + power
-            "Special Options" recovery/unbrick UI (Flash-based).[/code]
-
-The two kernels in flash (sigmblk6 and sigmblk7) turned out to be byte-identical - there is no separate "sound kernel." The audio difference between the two boot modes is entirely userspace: what each rootfs's startup scripts choose to initialize.
-
-Both rootfs images are cramfs with a 16KB block size (the MIPS kernel here runs 16K pages, not the usual 4K - this tripped up early attempts at surgical patching before we understood it).
-
-------------------------------------------------------------
-
-[h]2. Escaping Flash - getting our own pixels on screen[/h]
-
-The recovery UI is itself just a Flash movie ([code]chumbyflashplayer.x[/code] playing a [code]controlpanel.swf[/code]) that, conveniently, is told by a config file to preload a second SWF from the USB stick used to boot it:
-
-[code]# /mnt/usb/flashplayer.cfg
-PreloadWidget /mnt/usb/unbrick.swf[/code]
-
-That preloaded widget can shell out to a script we fully control ([code]unbrick_async[/code]). From there the plan was: kill the Flash player, draw the screen ourselves. Execution was not straightforward.
-
-[b]Dead end: the Linux framebuffer.[/b] [code]/dev/fb0[/code] (800x480 RGB565, via [code]em8xxxfb.ko[/code]) looked normal. Writing to it worked - for exactly one frame. Disassembling the driver showed why: the Sigma OSD compositor does NOT continuously scan the framebuffer. It only re-composites when specific hardware registers get poked by [code]fb_pan_display[/code] - and even that was a no-op, because the OSD memory only ever holds one buffer's worth of pixels. Double-buffering the driver module allocated two buffers and let us pan between them, and the screen still didn't update. fb0 is a passive memory window; it does not drive the panel.
-
-[quote]Anything built on /dev/fb0 - mmap, write(), pan ioctls, double-buffering - is a dead end on this hardware. The real compositor lives one layer up.[/quote]
-
-[b]What actually drives the panel:[/b] Sigma's userspace "Rich Media" API - librua (Resource/Unified Access) + libdcc (Display Chain Composer) - the same stack the Flash player itself uses. No headers ship on the device at all. A community SDK for a sibling chip, [url=https://github.com/jur/smp86xxsdk]jur/smp86xxsdk[/url] (written for the SMP8635), turned out ABI-compatible enough with our SMP8654 to use as a starting point, once linked against the Dash's OWN .so files instead of the SDK's.
-
-Working recipe:
-[code]RUACreateInstance(&pRUA, 0)
-DCCOpen(...)
-DCCInitMicroCodeEx(pDCC, DCCInitMode_InitDisplay)   <- the critical call
-DCCOpenMultiplePictureOSDVideoSource(profile, 2 /* buffers */, &pVS, 0)
-// per frame:
-RUALock / RUAMap(buffer[i]) -> write RGB565 pixels -> RUAUnLock
-DCCInsertPictureInMultiplePictureOSDVideoSource(pVS, i, 0)   // flips 0<->1[/code]
-
-[b]Key finding:[/b] the SDK defaults to [code]DCCInitMode_LeaveDisplay[/code] (leave the recovery UI's existing, non-DCC display setup alone). Under that mode, [code]DCCSetSurfaceSource[/code] blocks forever inside the kernel, waiting on a display-ready event that a non-DCC-owned display never fires. Switching to [b]DCCInitMode_InitDisplay[/b] makes DCC take ownership of the whole display chain - the event fires, everything downstream works immediately.
-
-Second surprise once pixels were finally landing: colors were wrong (grays/browns rendered green, gold rendered blue). The OSD profile claims RGB565, but the hardware composites as YUV regardless (the SDK's own sample code has a resigned comment to this effect). Fix: a 65536-entry RGB565->YUV565 lookup table, one array index per pixel, negligible cost.
-
-------------------------------------------------------------
-
-[h]3. Porting DOOM[/h]
-
-With a real display path working, the game itself was the easy part. Used [url=https://github.com/ozkl/doomgeneric]ozkl's doomgeneric[/url] (Techflash's linuxvt fork), wrote a new backend ([code]doomgeneric_dccdash.c[/code]) that does the DCC setup once at startup, then each frame nearest-neighbor-upscales DOOM's native 320x200 buffer into whichever OSD buffer isn't on screen, and flips.
-
+[b]The short version:[/b]
 [list]
-[*]Toolchain: Bootlin mips32el--glibc--stable-2020.02-2 (glibc 2.31 build, pre-2.34 C runtime -> binaries only require GLIBC_2.7, matching the Dash's ancient glibc 2.8)[/*]
-[*]Linked dynamically against the Dash's OWN librua/libdcc/libllad, not the SDK's stand-ins[/*]
-[*]320x200 native, nearest-neighbor scaled to fill 800x480[/*]
-[*]Input: touchscreen (/dev/input/event0, evdev) + UDP :5001 fallback for PC testing[/*]
-[*]~40fps measured[/*]
+[*]The recovery menu's Flash player preloads a widget off USB - that's the code-execution foothold the whole thing runs on.[/*]
+[*][code]/dev/fb0[/code] is a dead end on this hardware - the real display path is Sigma's undocumented [code]librua[/code]/[code]libdcc[/code] "RM/DCC" API, reverse-engineered enough to get double-buffered, correctly-colored frames on the panel.[/*]
+[*]DOOM ([code]doomgeneric[/code]) runs on top of that at ~40fps, cross-compiled for the Dash's ancient MIPS/glibc.[/*]
+[*]Audio's digital pipeline is fully solved and verified (webcam-mic + FFT tone detection, no ears required) - it's blocked at the very last step, routing decoded PCM out to the physical speaker, because the recovery kernel has no sound core at all. Full trace of exactly where it dies is in the write-up.[/*]
+[*]Also mapped out how the firmware actually protects itself (spoiler: the firmware images themselves aren't signed, just MD5-checked) - and found one open discrepancy between what the boot scripts say should work and what real hardware does. Details in the repo.[/*]
 [/list]
 
-Bug worth flagging for anyone doing a similar port: the frame-drawing hook called RUALock/RUAMap fresh every frame but only ever unlocked, never unmapped. The kernel's pool of mappable regions is finite - the game ran perfectly for ~11 seconds (title screen through the demo transition) then segfaulted the instant the pool was exhausted. Fix: map both OSD buffers once at startup, hold those pointers for the process's lifetime.
+[b]Want to try it yourself?[/b] The [code]usb-kit/[/code] folder in the repo is self-contained - copy it to a FAT32 stick, boot into Special Options, DOOM launches in ~10-15 seconds. No PC or network needed.
 
-------------------------------------------------------------
-
-[h]4. The audio investigation[/h]
-
-This is where most of the effort went, and the one piece still unsolved. Short version: [b]every layer of the digital audio pipeline works correctly, and no sound reaches the speaker.[/b]
-
-[code]DOOM PCM data
-  |  RUASendData()  ->  CONFIRMED: 49/49 sends accepted, decoder state = playing
-  v
-MRUA audio decoder (Sigma DSP, engine 0x1b)
-  |  DCCSetAudioPcmxFormat()  ->  CONFIRMED OK, 44.1kHz/16-bit/stereo
-  v
-Audio engine -> I2S output routing
-  |  X NEVER CONFIGURED -- this is the wall
-  v
-External I2C audio codec (init/unmute over I2C confirmed working)
-  v
-Speaker[/code]
-
-[b]What we ruled IN:[/b]
+[b]Where we could use help[/b] (both are documented in detail in the repo, not just vague asks):
 [list]
-[*]The DSP audio microcode does load, in both boot modes, using the correct region-specific variant (_nodts, not _dts54 - the wrong one returns a decrypt error rather than loading)[/*]
-[*]The decode pipeline genuinely runs: opening a decoder source, setting PCM format, streaming buffers all succeed; the decoder's internal clock advances in real time; every buffer fed is accepted[/*]
-[*]The analog output hardware is alive: the I2C audio codec inits and unmutes cleanly, and toggling its mute produced an audible click through the speaker during testing - proof the codec/amp/speaker chain is physically fine[/*]
+[*]Getting audio output routed without a kernel sound core - need the exact property sequence the ALSA driver sets up before the routing call that currently just hangs.[/*]
+[*]Why a rootfs modification that should be harmless per the boot scripts actually loops the boot on real hardware, twice, two different ways.[/*]
 [/list]
 
-[b]What blocks it:[/b]
-[quote]The recovery rootfs's kernel has NO Linux sound core at all - CONFIG_SOUND is unset, no soundcore.ko anywhere in the firmware, on either rootfs. em8xxxalsa.ko (what the real control panel uses) and em8xxxoss.ko both fail to load with "Unknown symbol register_sound_dsp / snd_card_new" - the symbols simply aren't in this kernel build.[/quote]
-
-That driver, when it DOES load (on the normal, production boot), performs the actual engine-to-I2S output routing - roughly twenty undocumented property writes to the audio engine module. We disassembled enough of em8xxxalsa.ko to identify several relevant property IDs (4162=master volume, 4168 comes first in sequence, plus 4158/4160/4166/4186/4652), and confirmed we can call the same underlying API the driver uses (libaudiooutports.so's OutportsAudioApplyOptions, the code behind the set_outports CLI tool) - but the very first property write in that sequence blocks forever inside the kernel, uninterruptible, when called this way. It's waiting on engine state that only the (missing) ALSA driver's own init would normally establish first.
-
-This isn't a missing flag or wrong parameter. It's a genuine kernel capability the recovery environment doesn't have, gating a userspace API with no fallback around it.
-
-[b]Tried and ruled out:[/b]
-[list]
-[*]Loading audio ucode earlier in boot to avoid memory pressure - unnecessary, ucode already loads fine in both boot modes[/*]
-[*]Replicating the boot-time set_outports call from the normal boot's init_fb - succeeds (no error), produces no sound, across 7 different output-mode/clock configs[/*]
-[*]Driving a suspected mute GPIO (register 0x10504) directly - real lead, turned out to be a status bit not a controllable mute[/*]
-[*]Going through the Flash player's own media-playback path instead of raw MRUA calls - fails too, for the same underlying reason (BtPlayObject::GenericRequest dispatch failed)[/*]
-[/list]
-
-All of this is independently reproducible: a webcam mic pointed at the unit, captured and analyzed with an FFT/Goertzel tone detector, confirms silence (or correctly detects a tone when one was actually reaching the speaker during earlier debugging) with no one needing to be in the room.
-
-------------------------------------------------------------
-
-[h]5. What we learned about the firmware's security model[/h]
-
-[list]
-[*]Firmware images are integrity-checked, not authenticated. The official updater protects u-boot/psp/k1/k2/rfs1/rfs2 with plain MD5 checksums - no cryptographic signature on any of them.[/*]
-[*]The one real signature on this device (a DSA key + a "verify" binary) only gates downloadable Flash content (widgets, control-panel SWFs) - never the firmware itself.[/*]
-[*]U-Boot doesn't verify the rootfs at all. It just loads whichever kernel rfsp points at and boots it.[/*]
-[*]A single string decides "production" vs "developer" behavior across every startup script we found: /etc/firmware_build_type. Only the literal values production/release or production/candidate take the locked path; anything else (including the file being unreadable) takes a developer branch that runs userhooks and, if a marker file is present, starts sshd with an empty root password.[/*]
-[/list]
-
-[quote][b]Open discrepancy, not yet resolved:[/b] on paper, flipping that one file's value should be enough to get an interactive root shell on the sound-capable normal boot. In practice, every attempt on real hardware - renaming the file so it can't be read, and separately, rebuilding the whole rootfs image with the value changed - causes the boot to loop before that check is ever reached, even though a rebuild that changes nothing reflashes and boots fine. Something earlier in boot is sensitive to the modification in a way we haven't isolated yet.[/quote]
-
-Practical upshot: the recovery rootfs (rfs2) is freely modifiable and reflashable - that's the whole reason this project was possible without hardware tools. The normal, sound-capable rootfs (rfs1) is where things get harder, for reasons that currently look like an implementation quirk rather than a real signing barrier.
-
-------------------------------------------------------------
-
-[h]6. Current status[/h]
-
-[code]Native display control (bypassing Flash) ..... DONE
-DOOM, playable, full screen .................. DONE (~40fps, touchscreen input)
-Digital audio pipeline (decode -> DSP) ....... DONE (verified via webcam-mic FFT)
-Audio reaching the physical speaker .......... BLOCKED (missing kernel sound core)
-Root shell on the normal (sound) boot ........ OPEN  (should work, doesn't yet)[/code]
-
-To be precise about "DOOM in normal boot mode": the boot menu selection lives in U-Boot environment variables we can edit live. Pointing the NORMAL power-on path at the recovery kernel+rootfs pair means the device powers on straight into DOOM, no button combo - from the user's chair, that IS normal boot. It's not, technically, the same rootfs that has working sound hardware. Closing that gap is the open problem in sections 5 and 8.
-
-------------------------------------------------------------
-
-[h]7. The blueprint - reusing this on other Sigma-based boxes[/h]
-
-The Dash isn't unique silicon. The SMP865x/86xx family shipped inside a lot of early-2010s IPTV set-top boxes and smart-display products. If you're staring at one of those:
-
-[list=1]
-[*]Find an unsigned, writable code-execution foothold first. Ours was a recovery/unbrick UI that preloads a script off USB - look for the equivalent on your device (recovery menus, diagnostic modes, "rooted" community firmware zips).[/*]
-[*]Don't trust the Linux framebuffer device. If there's a real hardware compositor between the fb device and the panel, writes to /dev/fb* may only ever show the first frame. Check for a vendor userspace media API before burning days on fb ioctls.[/*]
-[*]Community SDKs for a sibling chip are worth trying even off-target. jur/smp86xxsdk targets a different (but related) Sigma part than ours and still got us headers, structs, and working call sequences - especially once linked against the target device's own shared libraries instead of the SDK's.[/*]
-[*]Trace security boundaries empirically, not just by reading scripts. Our biggest surprise was that a check that looks trivially bypassable on paper doesn't behave that way on real hardware once you try it. Read the scripts to know where to look, but verify on-device before declaring something solved.[/*]
-[*]Instrument your verification, especially for anything analog (audio, in our case). A microphone plus an FFT tone detector meant every audio experiment could be checked automatically, no one needed in the room.[/*]
-[/list]
-
-------------------------------------------------------------
-
-[h]8. Open problems - where we could use help[/h]
-
-[list]
-[*][b]Audio output routing without a sound core.[/b] Need either (a) the missing kernel sound-core symbols made available in the recovery environment somehow, or (b) the specific sequence of RM engine properties em8xxxalsa.ko sets before its first (blocking) output-routing write, so it can be replicated from userspace in order. Anyone with SMP86xx ALSA driver source, or a debugger on similar hardware, would make short work of this.[/*]
-[*][b]Why a value-only rootfs modification loops the normal boot.[/b] Static analysis of the boot scripts says changing one file's contents should be harmless past a certain point in boot; live testing says otherwise, twice, by two different methods. If you've dealt with cramfs-based embedded Linux boot loops before and have a diagnostic technique we haven't tried, this is the one blocker between "DOOM with no caveats" and where we are now.[/*]
-[/list]
-
-Everything referenced above - the DOOM binary, the DCC display backend, the audio test tools, the deploy scripts - is packaged for anyone who wants to reproduce or continue this on their own unit. Happy to share on request.
+Issues/PRs on the repo welcome, or reply here.
 
 [i]Sony Dash HID-C10 - Sigma SMP8654[/i]

@@ -10,9 +10,10 @@ UI will run this kit automatically and DOOM will take over the screen in
 about 10-15 seconds. No PC, network, or wifi is needed - this is fully
 self-contained.
 
-Video only - there is no sound yet. See the write-up for why (the short
-version: the recovery environment's kernel has no sound core, and the
-digital audio pipeline hits a wall right before the physical speaker).
+Video only - there is no sound yet. Short version: the recovery
+environment's kernel has no sound core, and the digital audio pipeline
+hits a wall right before the physical speaker. Full details in the
+main repo README.
 
 FILES
 -----
@@ -45,6 +46,5 @@ TROUBLESHOOTING
   device (accessible if you also have a shell path in, e.g. over SSH on a
   normal boot) show the launch sequence and any errors.
 
-Full technical write-up (platform details, the display/audio investigation,
-and a blueprint for other Sigma SMP86xx-based hardware) is included
-separately as doom_on_dash_writeup.html / doom_on_dash_punbb_post.txt.
+Source code and the full technical background are at:
+https://github.com/outkastz/dash-doom
